@@ -1,2 +1,3 @@
 include configure.sh
 recursive-include static *
+include LICENSE

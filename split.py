@@ -12,8 +12,7 @@ parser.add_argument('--debug', action='store_true', help='Enable debug mode')
 
 args = parser.parse_args()
 
-# FIX: all data paths now use PATRONUS_BASE_DIR instead of script_dir,
-# which pointed to the pipx venv's site-packages — not the data directory.
+# FIX: use PATRONUS_BASE_DIR, not script_dir (which points to pipx site-packages)
 PATRONUS_BASE_DIR = os.path.expanduser('~/.local/.patronus')
 STATIC_DIR = os.path.join(PATRONUS_BASE_DIR, 'static')
 
@@ -22,6 +21,7 @@ class PatchedScreen(pyte.Screen):
     def select_graphic_rendition(self, *attrs, private=False):
         super().select_graphic_rendition(*attrs)
 
+
 def generate_filename(command, part_index, timestamp=None):
     cleaned_command_name = clean_filename(command)
     timestamp_part = timestamp.replace(' ', '_') if timestamp else ""
@@ -29,6 +29,7 @@ def generate_filename(command, part_index, timestamp=None):
     if len(base_name) > 255:
         base_name = base_name[:250] + ".cast"
     return f"{base_name}_{part_index}.cast"
+
 
 def process_with_terminal_emulator(input_file, output_file):
     screen = PatchedScreen(236, 49)
@@ -78,14 +79,16 @@ def create_text_versions(static_dir):
                 process_with_terminal_emulator(input_file, output_file)
 
 
-# FIX: write_status used a bare 'status_file.txt' which breaks if CWD isn't
-# the project directory. Now writes to the proper absolute path.
+# FIX: write_status used a bare 'status_file.txt' — breaks outside the project dir
 def write_status(status, static_dir=None):
     if static_dir is None:
         static_dir = STATIC_DIR
     status_file = os.path.join(static_dir, 'status_file.txt')
-    with open(status_file, 'w') as file:
-        file.write(status)
+    try:
+        with open(status_file, 'w') as file:
+            file.write(status)
+    except Exception as e:
+        print(f"Warning: could not write status file: {e}")
 
 
 def split_file(input_dir, output_dir, debug=False):
@@ -106,11 +109,11 @@ def split_file(input_dir, output_dir, debug=False):
     try:
         for file in tqdm(files_to_process, desc="Splitting Redacted Files"):
             input_file_path = os.path.join(input_dir, file)
-            output_file_path = generate_output_filename(file, output_dir)
 
             if file in mapping and os.path.getmtime(input_file_path) == mapping[file]:
                 if debug:
-                    print(f"Skipping file {file} as it hasn't changed since the last run.")
+                    print(f"Skipping {file} (unchanged)")
+                processed_files.add(file)
                 continue
 
             if file not in processed_files:
@@ -120,10 +123,10 @@ def split_file(input_dir, output_dir, debug=False):
                     with open(mapping_file, 'w') as f:
                         json.dump(mapping, f, indent=4)
                 except Exception as e:
-                    print(f"Error processing section of {input_file_path}: {e}")
+                    print(f"Error processing {input_file_path}: {e}")
                 processed_files.add(file)
                 if debug:
-                    print(f"Processed file: {file}")
+                    print(f"Processed: {file}")
 
             if total_files > 0:
                 current_progress = round((len(processed_files) / total_files) * 100)
@@ -142,53 +145,100 @@ def process_cast_file(input_file_path, output_dir, mapping_file):
         with open(input_file_path, 'r') as file:
             lines = file.readlines()
     except IOError as e:
-        print(f"Error: Could not read file '{input_file_path}'. {e}")
+        print(f"Error: Could not read file '{input_file_path}': {e}")
         return
 
-    header = None
-    segments = []
-    current_segment = []
-    current_command = None
-    current_timestamp = None
+    screen = PatchedScreen(236, 49)
+    stream = pyte.Stream(screen)
 
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            data = json.loads(line)
-        except json.JSONDecodeError:
-            continue
+    # Parse and validate the header line
+    json_line = lines[0].strip()
+    try:
+        json_data = json.loads(json_line)
+    except json.JSONDecodeError:
+        print(f"Error: Invalid header JSON in '{input_file_path}'")
+        return
 
-        if isinstance(data, dict):
-            header = data
-            continue
+    part_index = 0
+    current_file_content = []
+    start_time = None
+    command_name = None
+    timestamp = None
 
-        if isinstance(data, list) and len(data) == 3:
-            event_time, event_type, event_data = data
-            if event_type == 'o':
-                display = extract_command(event_data)
-                if display and display != "initial":
-                    command_name = clean_filename(display)
+    if check_file_modification(input_file_path, mapping_file):
+        for line in lines[1:]:
+            line = line.strip()
+            if not line:
+                continue
+
+            # FIX: parse JSON once here; skip malformed lines without losing
+            # the accumulated segment (the original bare `except` + `continue`
+            # caused the entire segment to be discarded on any bad line,
+            # including the truncated last line asciinema writes on stop)
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError as e:
+                if debug:
+                    print(f"Skipping malformed line in '{input_file_path}': {e}")
+                # Don't continue here — fall through so we can still flush
+                # any accumulated segment at end-of-file. Just skip this line.
+                continue
+
+            if not isinstance(data, list) or len(data) < 3:
+                if debug:
+                    print(f"Skipping unexpected data format: {data}")
+                continue
+
+            event_time, event_type, event_data = data[0], data[1], data[2]
+
+            try:
+                stream.feed(event_data)
+            except Exception as e:
+                if debug:
+                    print(f"Stream feed error in '{input_file_path}': {e}")
+                continue
+
+            current_display = "\n".join(screen.display)
+
+            # Prompt detection — new command boundary
+            if re.search(r';[\w,\d,-,_,\.]+@[\w,\-.\d]+:', line):
+                if current_file_content and command_name:
                     if not is_trivial_command(command_name, trivial_commands):
-                        if current_segment:
-                            segments.append((current_command, current_timestamp, current_segment))
-                        current_command = command_name
-                        current_timestamp = event_time
-                        current_segment = []
-                current_segment.append(line)
+                        filename = os.path.join(output_dir, generate_filename(clean_filename(command_name), part_index))
+                        write_segment(filename, [json_line] + current_file_content, timestamp)
+                        part_index += 1
+                current_file_content = []
+                command_name = None
+                timestamp = None
+                start_time = None
 
-    if current_segment:
-        segments.append((current_command, current_timestamp, current_segment))
+            # FIX: adjust_time previously re-parsed `line` from string, which
+            # would fail on any line that had already been partially consumed or
+            # was malformed. Now we use the already-parsed `data` directly.
+            original_time = float(event_time)
+            if start_time is None:
+                start_time = original_time
+            adjusted_time = round(original_time - start_time, 6)
+            current_file_content.append(json.dumps([adjusted_time, event_type, event_data]))
 
-    for command, timestamp, segment in segments:
-        if command:
-            output_filename = generate_output_filename(command, output_dir)
-            content = [json.dumps(header)] + segment if header else segment
-            write_segment(output_filename, content, timestamp)
+            # Extract timestamp from the recording if present
+            if timestamp is None:
+                ts_match = re.search(r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [A-Z]{3}', event_data)
+                if ts_match:
+                    timestamp = ts_match.group()
+
+            # Extract command name from prompt
+            if re.search(r'└─\$|➜', current_display):
+                command_name = extract_command(current_display)
+
+        # Flush final segment
+        if current_file_content and command_name and not is_trivial_command(command_name, trivial_commands):
+            filename = os.path.join(output_dir, generate_filename(clean_filename(command_name), part_index))
+            write_segment(filename, [json_line] + current_file_content, timestamp)
+            update_mapping_file(input_file_path, mapping_file)
 
 
-def is_mapping_file_changed(file_path, mapping_file):
+def check_file_modification(file_path, mapping_file):
     try:
         with open(mapping_file, 'r') as f:
             mapping = json.load(f)
@@ -214,13 +264,17 @@ def extract_plain_text(display):
     return "\n".join(line.rstrip() for line in display)
 
 
-def adjust_time(line, start_time):
-    parts = json.loads(line.strip())
-    original_time = float(parts[0])
-    return original_time, parts[1], parts[2]
+# FIX: original adjust_time re-parsed the raw `line` string — but callers had
+# already parsed it. This caused a double-parse and broke on truncated lines.
+# This function is now only used if needed externally; process_cast_file no
+# longer calls it.
+def adjust_time(data, start_time):
+    original_time = float(data[0])
+    return original_time, data[1], data[2]
 
 
 def write_segment(filename, content, timestamp):
+    os.makedirs(os.path.dirname(filename), exist_ok=True)
     with open(filename, 'w') as new_file:
         new_file.write('\n'.join(content))
     if args.debug:
@@ -251,16 +305,14 @@ def extract_command(display):
             parts = command.split()
             if parts:
                 if parts[0].startswith(('python3', 'sudo')):
-                    full_command = " ".join(parts[1:])
-                    return full_command.replace(' ', '_')
+                    return " ".join(parts[1:]).replace(' ', '_')
             return command.replace(' ', '_')
         elif '└─$' in line:
             command = line.split('└─$')[-1].strip()
             parts = command.split()
             if parts:
                 if parts[0].startswith(('python3', 'sudo')):
-                    full_command = " ".join(parts[1:])
-                    return full_command.replace(' ', '_')
+                    return " ".join(parts[1:]).replace(' ', '_')
             return command.replace(' ', '_')
     return "initial"
 
@@ -293,11 +345,9 @@ def is_trivial_command(command, trivial_commands):
 
 
 if __name__ == "__main__":
-    # FIX: was using script_dir (pipx site-packages) — now uses PATRONUS_BASE_DIR
     input_dir = os.path.join(STATIC_DIR, 'redacted_full')
     output_dir = os.path.join(STATIC_DIR, 'splits')
 
-    # Ensure directories exist before trying to list them
     os.makedirs(input_dir, exist_ok=True)
     os.makedirs(output_dir, exist_ok=True)
 

@@ -951,6 +951,12 @@ COMMAND_TEMPLATE = '''
             right.innerHTML = '';
             const favorites = {{ favorites | tojson }};
 
+            // DEBUG: show raw favorites value so we can diagnose
+            const debugEl = document.createElement('div');
+            debugEl.style.cssText = 'color:#ff0;font-size:11px;word-break:break-all;margin-bottom:8px;';
+            debugEl.textContent = 'favorites: ' + JSON.stringify(favorites);
+            left.appendChild(debugEl);
+
             // favorites is a list on the Favorites page, a dict on command pages
             const files = Array.isArray(favorites) ? favorites : Object.keys(favorites);
             files.forEach(file => {

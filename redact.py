@@ -4,6 +4,10 @@ import sys
 import os
 import argparse
 
+# FIX: was using script_dir (pipx site-packages) — now uses PATRONUS_BASE_DIR
+PATRONUS_BASE_DIR = os.path.expanduser('~/.local/.patronus')
+
+
 def extract_ansi_and_text(text):
     ansi_escape = re.compile(r'(\x1b\[[0-9;]*[mKDHCUJ])')
     parts = ansi_escape.split(text)
@@ -65,7 +69,8 @@ def main():
     parser.add_argument('-w', '--word', help="Specify a custom word to redact.")
     args = parser.parse_args()
 
-    PATRONUS_BASE_DIR = os.path.expanduser('~/.local/.patronus')
+    # FIX: was script_dir = os.path.dirname(os.path.realpath(__file__))
+    # which resolves to the pipx venv site-packages, not the data directory
     redacted_dir = os.path.join(PATRONUS_BASE_DIR, "static", "redacted_full")
 
     if args.file:

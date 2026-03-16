@@ -950,16 +950,11 @@ COMMAND_TEMPLATE = '''
             left.innerHTML = '';
             right.innerHTML = '';
             const favorites = {{ favorites | tojson }};
+
             Object.keys(favorites).forEach(file => {
-                const item = document.createElement('div');
-                item.className = 'item';
-                item.draggable = true;
-                item.textContent = file.replace('.cast', '');
-                item.dataset.file = file;
-                item.innerHTML += '<span class="clone-btn" onclick="cloneItem(this)">+</span>';
-                addDragListeners(item);
-                left.appendChild(item);
+                left.appendChild(makeItem(file));
             });
+
             [left, right].forEach(container => {
                 container.addEventListener('dragover', e => e.preventDefault());
                 container.addEventListener('drop', e => {
@@ -970,22 +965,53 @@ COMMAND_TEMPLATE = '''
             });
         }
 
-        function addDragListeners(item) {
-            item.addEventListener('dragstart', () => item.classList.add('dragging'));
-            item.addEventListener('dragend', () => item.classList.remove('dragging'));
+        function makeItem(file) {
+            const item = document.createElement('div');
+            item.className = 'item';
+            item.draggable = true;
+            item.dataset.file = file;
+
+            // FIX: use a text span + button span instead of innerHTML +=
+            // which was destroying dataset.file and corrupting the label
+            const label = document.createElement('span');
+            label.className = 'item-label';
+            label.textContent = file.replace('.cast', '');
+            item.appendChild(label);
+
+            const addBtn = document.createElement('span');
+            addBtn.className = 'clone-btn';
+            addBtn.textContent = '+';
+            addBtn.title = 'Add to combine list';
+            addBtn.onclick = function(e) { e.stopPropagation(); addToRight(item); };
+            item.appendChild(addBtn);
+
+            addDragListeners(item);
+            return item;
         }
 
-        function cloneItem(btn) {
-            const original = btn.parentElement;
-            const clone = original.cloneNode(true);
-            clone.querySelector('.clone-btn').onclick = function() { cloneItem(this); };
-            clone.querySelector('.remove-btn') && (clone.querySelector('.remove-btn').onclick = function() { removeItem(this); });
+        // FIX: cloneItem was appending to original.parentElement (the left box).
+        // Now + button clones the item into the right box with a remove button.
+        function addToRight(original) {
+            const right = document.getElementById('draggableContainerRight');
+            const clone = document.createElement('div');
+            clone.className = 'item';
+            clone.draggable = true;
+            clone.dataset.file = original.dataset.file;
+
+            const label = document.createElement('span');
+            label.className = 'item-label';
+            label.textContent = original.dataset.file.replace('.cast', '');
+            clone.appendChild(label);
+
+            const removeBtn = document.createElement('span');
+            removeBtn.className = 'remove-btn';
+            removeBtn.textContent = '✕';
+            removeBtn.title = 'Remove';
+            removeBtn.onclick = function(e) { e.stopPropagation(); clone.remove(); };
+            clone.appendChild(removeBtn);
+
             addDragListeners(clone);
-            original.parentElement.appendChild(clone);
-        }
-
-        function removeItem(btn) {
-            btn.parentElement.remove();
+            right.appendChild(clone);
         }
 
         function generateCombinedFile() {

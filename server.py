@@ -945,77 +945,112 @@ COMMAND_TEMPLATE = '''
         }
 
         function initializePopups() {
-            const left = document.getElementById('draggableContainerLeft');
-            const right = document.getElementById('draggableContainerRight');
-            left.innerHTML = '';
-            right.innerHTML = '';
-            const favorites = {{ favorites | tojson }};
+            const draggableContainerLeft = document.getElementById('draggableContainerLeft');
+            draggableContainerLeft.innerHTML = '';
 
-            // favorites is a list on the Favorites page, a dict on command pages
-            const files = Array.isArray(favorites) ? favorites : Object.keys(favorites);
-            files.forEach(file => {
-                left.appendChild(makeItem(file));
-            });
+            const favoriteFiles = {{ favorites | tojson }};
+            favoriteFiles.forEach(function(file) {
+                const item = document.createElement('div');
+                item.classList.add('item');
+                item.textContent = file;
 
-            [left, right].forEach(container => {
-                container.addEventListener('dragover', e => e.preventDefault());
-                container.addEventListener('drop', e => {
-                    e.preventDefault();
-                    const dragged = document.querySelector('.dragging');
-                    if (dragged) container.appendChild(dragged);
-                });
+                const cloneBtn = document.createElement('span');
+                cloneBtn.classList.add('clone-btn');
+                cloneBtn.innerHTML = '&#x2b;';
+                cloneBtn.onclick = function() {
+                    cloneItem(item.textContent);
+                };
+
+                item.appendChild(cloneBtn);
+                draggableContainerLeft.appendChild(item);
             });
         }
 
-        function makeItem(file) {
+        function cloneItem(fileName) {
+            const draggableContainerRight = document.getElementById('draggableContainerRight');
             const item = document.createElement('div');
-            item.className = 'item';
-            item.draggable = true;
-            item.dataset.file = file;
-            // Set text directly on the div, then append the button after
-            item.textContent = file.replace(/\.cast$/, '');
+            item.classList.add('item');
 
-            const addBtn = document.createElement('span');
-            addBtn.className = 'clone-btn';
-            addBtn.textContent = '+';
-            addBtn.title = 'Add to combine list';
-            addBtn.onclick = function(e) { e.stopPropagation(); addToRight(item); };
-            item.appendChild(addBtn);
+            const fileNameSpan = document.createElement('span');
+            fileNameSpan.classList.add('item-text');
+            fileNameSpan.textContent = fileName.replace(/\+$/, '');
+            item.appendChild(fileNameSpan);
 
-            addDragListeners(item);
-            return item;
-        }
-
-        function addToRight(original) {
-            const right = document.getElementById('draggableContainerRight');
-            const clone = document.createElement('div');
-            clone.className = 'item';
-            clone.draggable = true;
-            clone.dataset.file = original.dataset.file;
-            clone.textContent = original.dataset.file.replace(/\.cast$/, '');
+            const cloneBtn = document.createElement('span');
+            cloneBtn.classList.add('clone-btn');
+            cloneBtn.style.color = '#00FF00';
+            cloneBtn.onclick = function() {
+                cloneItem(fileName.replace(/\+$/, ''));
+            };
+            item.appendChild(cloneBtn);
 
             const removeBtn = document.createElement('span');
-            removeBtn.className = 'remove-btn';
-            removeBtn.textContent = '✕';
-            removeBtn.title = 'Remove';
-            removeBtn.onclick = function(e) { e.stopPropagation(); clone.remove(); };
-            clone.appendChild(removeBtn);
+            removeBtn.classList.add('remove-btn');
+            removeBtn.textContent = '×';
+            removeBtn.style.color = '#FF0000';
+            removeBtn.onclick = function() {
+                this.parentElement.remove();
+            };
+            item.appendChild(removeBtn);
 
-            addDragListeners(clone);
-            right.appendChild(clone);
+            draggableContainerRight.appendChild(item);
+            makeItemsDraggable();
+        }
+
+        function makeItemsDraggable() {
+            const container = document.getElementById('draggableContainerRight');
+            const items = container.getElementsByClassName('item');
+            let dragSrcEl = null;
+
+            function handleDragStart(e) {
+                this.style.opacity = '0.4';
+                dragSrcEl = this;
+                e.dataTransfer.effectAllowed = 'move';
+                e.dataTransfer.setData('text/html', this.innerHTML);
+            }
+            function handleDragEnd(e) {
+                this.style.opacity = '1';
+                Array.from(items).forEach(function(item) { item.classList.remove('over'); });
+            }
+            function handleDragOver(e) {
+                if (e.preventDefault) e.preventDefault();
+                return false;
+            }
+            function handleDragEnter(e) { this.classList.add('over'); }
+            function handleDragLeave(e) { this.classList.remove('over'); }
+            function handleDrop(e) {
+                if (e.stopPropagation) e.stopPropagation();
+                if (dragSrcEl !== this) {
+                    dragSrcEl.innerHTML = this.innerHTML;
+                    this.innerHTML = e.dataTransfer.getData('text/html');
+                }
+                return false;
+            }
+
+            Array.from(items).forEach(function(item) {
+                item.addEventListener('dragstart', handleDragStart, false);
+                item.addEventListener('dragend', handleDragEnd, false);
+                item.addEventListener('dragover', handleDragOver, false);
+                item.addEventListener('dragenter', handleDragEnter, false);
+                item.addEventListener('dragleave', handleDragLeave, false);
+                item.addEventListener('drop', handleDrop, false);
+            });
         }
 
         function generateCombinedFile() {
-            const right = document.getElementById('draggableContainerRight');
-            const items = right.querySelectorAll('.item');
-            const files = Array.from(items).map(i => i.dataset.file);
-            const newName = document.getElementById('newFileNameRight').value.trim();
-            if (!newName) { alert('Please enter a file name.'); return; }
-            if (!files.length) { alert('Add at least one recording to combine.'); return; }
+            const container = document.getElementById('draggableContainerRight');
+            const items = container.getElementsByClassName('item');
+            const fileOrder = Array.from(items).map(item =>
+                item.getElementsByClassName('item-text')[0].textContent.replace(/\+$/, '').trim()
+            );
+            let newFileName = document.getElementById('newFileNameRight').value.trim();
+            if (!newFileName) { alert('Please enter a file name.'); return; }
+            if (!fileOrder.length) { alert('Add at least one recording to combine.'); return; }
+            if (!newFileName.endsWith('.cast')) newFileName += '.cast';
             fetch('/combine_files', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ files, new_file_name: newName })
+                body: JSON.stringify({ files: fileOrder, new_file_name: newFileName })
             }).then(r => r.json()).then(data => {
                 if (data.success) {
                     closeCombinePopup();

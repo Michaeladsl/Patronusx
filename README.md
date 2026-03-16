@@ -46,7 +46,7 @@ The web browser easily sorts by command and allows the user to delete the record
 
 Patronus allows for individual running of tools
 ```
-patronus redact,split,server,config
+patronus --run redact,split,server,config
 ```
 
 

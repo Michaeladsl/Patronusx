@@ -274,6 +274,14 @@ def search_files():
     results = search_index(query)
     return jsonify(results)
 
+# Explicit route for .cast files so Flask serves them with the correct MIME type.
+# Without this, some browsers/versions reject the file or the asciinema player
+# fails silently because Flask's static handler may not know the .cast type.
+@app.route('/static/splits/<path:filename>')
+def serve_cast(filename):
+    from flask import send_from_directory
+    return send_from_directory(splits_dir, filename, mimetype='application/json')
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  HTML TEMPLATES
@@ -887,7 +895,7 @@ COMMAND_TEMPLATE = '''
                 document.querySelectorAll('.dropdown-content').forEach(p => p.style.display = 'none');
                 player.style.display = 'block';
                 var ts = new Date().getTime();
-                AsciinemaPlayer.create('/.patronus/static/splits/' + filename + '?_=' + ts, player);
+                AsciinemaPlayer.create('/static/splits/' + filename + '?_=' + ts, player);
             }
         }
 
@@ -898,7 +906,7 @@ COMMAND_TEMPLATE = '''
                 const player = document.getElementById('demo-' + openFile);
                 if (player) {
                     player.style.display = 'block';
-                    AsciinemaPlayer.create('/.patronus/static/splits/' + openFile + '?_=' + new Date().getTime(), player);
+                    AsciinemaPlayer.create('/static/splits/' + openFile + '?_=' + new Date().getTime(), player);
                 }
             }
         };
@@ -1045,7 +1053,7 @@ COMMAND_TEMPLATE = '''
                     document.getElementById('redact-word-' + filename).value = '';
                     setTimeout(() => {
                         playerContainer.style.display = 'block';
-                        AsciinemaPlayer.create('/.patronus/static/splits/' + filename + '?_=' + ts, playerContainer);
+                        AsciinemaPlayer.create('/static/splits/' + filename + '?_=' + ts, playerContainer);
                     }, 1000);
                 }
             }).catch(err => console.error(err));

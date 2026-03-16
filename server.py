@@ -951,7 +951,9 @@ COMMAND_TEMPLATE = '''
             right.innerHTML = '';
             const favorites = {{ favorites | tojson }};
 
-            Object.keys(favorites).forEach(file => {
+            // favorites is a list on the Favorites page, a dict on command pages
+            const files = Array.isArray(favorites) ? favorites : Object.keys(favorites);
+            files.forEach(file => {
                 left.appendChild(makeItem(file));
             });
 

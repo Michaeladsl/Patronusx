@@ -227,9 +227,15 @@ def redact_text():
     word = data['word']
     file_to_redact = os.path.join(splits_dir, data['file'])
 
-    redact_script_path = os.path.expanduser('~/.local/share/pipx/venvs/patronus/lib/python3.12/site-packages/redact.py')
-
-    subprocess.run(['python3', redact_script_path, '-w', word, '-f', file_to_redact], check=True)
+    # FIX: old code hardcoded python3.12 path and shelled out to redact.py as a
+    # subprocess — breaks on any other Python version and is fragile.
+    # redact.py is installed in the same pipx venv, so just import it directly.
+    try:
+        import redact as redact_module
+        redact_module.process_cast_file(file_to_redact, file_to_redact, redaction_word=word, force=True)
+    except Exception as e:
+        app.logger.error(f"Redact failed: {e}")
+        return jsonify(success=False, error=str(e)), 500
 
     return jsonify(success=True)
 

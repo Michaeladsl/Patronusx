@@ -951,12 +951,6 @@ COMMAND_TEMPLATE = '''
             right.innerHTML = '';
             const favorites = {{ favorites | tojson }};
 
-            // DEBUG: show raw favorites value so we can diagnose
-            const debugEl = document.createElement('div');
-            debugEl.style.cssText = 'color:#ff0;font-size:11px;word-break:break-all;margin-bottom:8px;';
-            debugEl.textContent = 'favorites: ' + JSON.stringify(favorites);
-            left.appendChild(debugEl);
-
             // favorites is a list on the Favorites page, a dict on command pages
             const files = Array.isArray(favorites) ? favorites : Object.keys(favorites);
             files.forEach(file => {
@@ -978,13 +972,8 @@ COMMAND_TEMPLATE = '''
             item.className = 'item';
             item.draggable = true;
             item.dataset.file = file;
-
-            // FIX: use a text span + button span instead of innerHTML +=
-            // which was destroying dataset.file and corrupting the label
-            const label = document.createElement('span');
-            label.className = 'item-label';
-            label.textContent = file.replace('.cast', '');
-            item.appendChild(label);
+            // Set text directly on the div, then append the button after
+            item.textContent = file.replace(/\.cast$/, '');
 
             const addBtn = document.createElement('span');
             addBtn.className = 'clone-btn';
@@ -997,19 +986,13 @@ COMMAND_TEMPLATE = '''
             return item;
         }
 
-        // FIX: cloneItem was appending to original.parentElement (the left box).
-        // Now + button clones the item into the right box with a remove button.
         function addToRight(original) {
             const right = document.getElementById('draggableContainerRight');
             const clone = document.createElement('div');
             clone.className = 'item';
             clone.draggable = true;
             clone.dataset.file = original.dataset.file;
-
-            const label = document.createElement('span');
-            label.className = 'item-label';
-            label.textContent = original.dataset.file.replace('.cast', '');
-            clone.appendChild(label);
+            clone.textContent = original.dataset.file.replace(/\.cast$/, '');
 
             const removeBtn = document.createElement('span');
             removeBtn.className = 'remove-btn';

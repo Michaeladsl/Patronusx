@@ -275,8 +275,24 @@ def adjust_time(data, start_time):
 
 def write_segment(filename, content, timestamp):
     os.makedirs(os.path.dirname(filename), exist_ok=True)
+    # FIX: asciinema player v3 requires 'cols'/'rows' in the header.
+    # Recordings from asciinema use 'width'/'height' — translate them here.
+    fixed_content = []
+    for i, line in enumerate(content):
+        if i == 0:
+            try:
+                header = json.loads(line)
+                if 'width' in header and 'cols' not in header:
+                    header['cols'] = header.pop('width')
+                if 'height' in header and 'rows' not in header:
+                    header['rows'] = header.pop('height')
+                line = json.dumps(header)
+            except (json.JSONDecodeError, Exception):
+                pass
+        fixed_content.append(line)
+    # FIX: add trailing newline — player v3 is strict about this
     with open(filename, 'w') as new_file:
-        new_file.write('\n'.join(content))
+        new_file.write('\n'.join(fixed_content) + '\n')
     if args.debug:
         print(f"Created file: {filename}")
 

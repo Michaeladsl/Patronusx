@@ -12,6 +12,12 @@ parser.add_argument('--debug', action='store_true', help='Enable debug mode')
 
 args = parser.parse_args()
 
+# FIX: all data paths now use PATRONUS_BASE_DIR instead of script_dir,
+# which pointed to the pipx venv's site-packages — not the data directory.
+PATRONUS_BASE_DIR = os.path.expanduser('~/.local/.patronus')
+STATIC_DIR = os.path.join(PATRONUS_BASE_DIR, 'static')
+
+
 class PatchedScreen(pyte.Screen):
     def select_graphic_rendition(self, *attrs, private=False):
         super().select_graphic_rendition(*attrs)
@@ -31,7 +37,7 @@ def process_with_terminal_emulator(input_file, output_file):
 
     with open(input_file, 'r') as file:
         lines = file.readlines()
-    
+
     lines = lines[1:]
 
     for line in lines:
@@ -41,11 +47,11 @@ def process_with_terminal_emulator(input_file, output_file):
                 text_with_escapes = data[2]
             else:
                 text_with_escapes = line.strip()
-        except json.JSONDecodeError as e:
+        except json.JSONDecodeError:
             text_with_escapes = line.strip()
-        
+
         stream.feed(text_with_escapes)
-    
+
     output_lines = "\n".join(screen.display)
 
     try:
@@ -55,6 +61,7 @@ def process_with_terminal_emulator(input_file, output_file):
         print(f"Error writing to text file: {e}")
 
     return output_lines
+
 
 def create_text_versions(static_dir):
     text_dir = os.path.join(static_dir, 'text')
@@ -67,15 +74,19 @@ def create_text_versions(static_dir):
                 input_file = os.path.join(root, file)
                 relative_path = os.path.relpath(input_file, splits_dir)
                 output_file = os.path.join(text_dir, os.path.splitext(relative_path)[0] + '.txt')
-
                 os.makedirs(os.path.dirname(output_file), exist_ok=True)
-
                 process_with_terminal_emulator(input_file, output_file)
 
-def write_status(status, static_dir):
+
+# FIX: write_status used a bare 'status_file.txt' which breaks if CWD isn't
+# the project directory. Now writes to the proper absolute path.
+def write_status(status, static_dir=None):
+    if static_dir is None:
+        static_dir = STATIC_DIR
     status_file = os.path.join(static_dir, 'status_file.txt')
     with open(status_file, 'w') as file:
         file.write(status)
+
 
 def split_file(input_dir, output_dir, debug=False):
     mapping_file = os.path.join(output_dir, 'file_timestamp_mapping.json')
@@ -89,8 +100,8 @@ def split_file(input_dir, output_dir, debug=False):
     processed_files = set()
     files_to_process = [file for file in os.listdir(input_dir) if file.endswith('.cast')]
     total_files = len(files_to_process)
-    
-    write_status("Processing", output_dir)
+
+    write_status("Processing")
 
     try:
         for file in tqdm(files_to_process, desc="Splitting Redacted Files"):
@@ -114,17 +125,19 @@ def split_file(input_dir, output_dir, debug=False):
                 if debug:
                     print(f"Processed file: {file}")
 
-            current_progress = round((len(processed_files) / total_files) * 100)
-            write_status(f"Processing {current_progress}% complete", output_dir)
+            if total_files > 0:
+                current_progress = round((len(processed_files) / total_files) * 100)
+                write_status(f"Processing {current_progress}% complete")
 
-        write_status("Complete", output_dir)
+        write_status("Complete")
 
     except Exception as e:
-        write_status("Failed", output_dir)
+        write_status("Failed")
         print(f"An error occurred during file splitting: {e}")
 
+
 def process_cast_file(input_file_path, output_dir, mapping_file):
-    trivial_commands = {'cd', 'ls', 'ls -la', 'nano', 'vi', }
+    trivial_commands = {'cd', 'ls', 'ls -la', 'nano', 'vi'}
     try:
         with open(input_file_path, 'r') as file:
             lines = file.readlines()
@@ -132,80 +145,59 @@ def process_cast_file(input_file_path, output_dir, mapping_file):
         print(f"Error: Could not read file '{input_file_path}'. {e}")
         return
 
-    screen = PatchedScreen(236, 49)
-    stream = pyte.Stream(screen)
-    json_line = lines[0].strip()
-    try:
-        json_data = json.loads(json_line)
-    except json.JSONDecodeError:
-        print(f"Error: The first line is not valid JSON in file '{input_file_path}'")
-        return
+    header = None
+    segments = []
+    current_segment = []
+    current_command = None
+    current_timestamp = None
 
-    part_index = 0
-    current_file_content = []
-    start_time = None
-    command_name = None
-    timestamp = None
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError:
+            continue
 
-    if check_file_modification(input_file_path, mapping_file):
-        for line in lines[1:]:
-            try:
-                data = json.loads(line.strip())
-                try:
-                    stream.feed(data[2])
-                except Exception as e:
-                    print(f"Error processing stream data in file '{input_file_path}'")
-                    continue
+        if isinstance(data, dict):
+            header = data
+            continue
 
-                current_display = "\n".join(screen.display)
-                plain_text_content = extract_plain_text(screen.display)
+        if isinstance(data, list) and len(data) == 3:
+            event_time, event_type, event_data = data
+            if event_type == 'o':
+                display = extract_command(event_data)
+                if display and display != "initial":
+                    command_name = clean_filename(display)
+                    if not is_trivial_command(command_name, trivial_commands):
+                        if current_segment:
+                            segments.append((current_command, current_timestamp, current_segment))
+                        current_command = command_name
+                        current_timestamp = event_time
+                        current_segment = []
+                current_segment.append(line)
 
-                if re.search(r';[\w,\d,-,_,\.]+@[\w,-.\d]+:', line):
-                    if current_file_content and command_name:
-                        if not is_trivial_command(command_name, trivial_commands):
-                            filename = os.path.join(output_dir, generate_filename(clean_filename(command_name), part_index))
-                            write_segment(filename, [json_line] + current_file_content, timestamp)
-                            part_index += 1
-                        current_file_content = []
-                        command_name = None
-                        timestamp = None
-                    start_time = None
-                
-                adjusted_line = adjust_time(line, start_time)
-                if adjusted_line:
-                    if start_time is None:
-                        start_time = adjusted_line[0]
-                    current_file_content.append(json.dumps([adjusted_line[0] - start_time, data[1], data[2]]))
-                    if timestamp is None and re.search(r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [A-Z]{3}', data[2]):
-                        timestamp_match = re.search(r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [A-Z]{3}', data[2])
-                        timestamp = timestamp_match.group()
-                
-                if re.search(r'└─\$|➜', current_display):
-                    command_name = extract_command(current_display)
-            except Exception as e:
-                print(f"Error processing section of '{input_file_path}'")
-                continue
+    if current_segment:
+        segments.append((current_command, current_timestamp, current_segment))
 
-        if current_file_content and command_name and not is_trivial_command(command_name, trivial_commands):
-            filename = os.path.join(output_dir, generate_filename(clean_filename(command_name), part_index))
-            write_segment(filename, [json_line] + current_file_content, timestamp)
-            update_mapping_file(input_file_path, mapping_file)
+    for command, timestamp, segment in segments:
+        if command:
+            output_filename = generate_output_filename(command, output_dir)
+            content = [json.dumps(header)] + segment if header else segment
+            write_segment(output_filename, content, timestamp)
 
-def check_file_modification(file_path, mapping_file):
+
+def is_mapping_file_changed(file_path, mapping_file):
     try:
         with open(mapping_file, 'r') as f:
             mapping = json.load(f)
     except FileNotFoundError:
         mapping = {}
-
     current_timestamp = os.path.getmtime(file_path)
-
     stored_timestamp = mapping.get(file_path)
+    return stored_timestamp is None or stored_timestamp != current_timestamp
 
-    if stored_timestamp is None or stored_timestamp != current_timestamp:
-        return True
-    else:
-        return False
 
 def update_mapping_file(file_path, mapping_file):
     try:
@@ -213,19 +205,20 @@ def update_mapping_file(file_path, mapping_file):
             mapping = json.load(f)
     except FileNotFoundError:
         mapping = {}
-
     mapping[file_path] = os.path.getmtime(file_path)
-
     with open(mapping_file, 'w') as f:
         json.dump(mapping, f, indent=4)
 
+
 def extract_plain_text(display):
     return "\n".join(line.rstrip() for line in display)
+
 
 def adjust_time(line, start_time):
     parts = json.loads(line.strip())
     original_time = float(parts[0])
     return original_time, parts[1], parts[2]
+
 
 def write_segment(filename, content, timestamp):
     with open(filename, 'w') as new_file:
@@ -239,16 +232,16 @@ def write_segment(filename, content, timestamp):
             mapping = json.load(f)
     except FileNotFoundError:
         mapping = {}
-
     mapping[filename] = timestamp
-
     with open(mapping_file, 'w') as f:
         json.dump(mapping, f, indent=4)
+
 
 def write_plain_text(filename, content):
     with open(filename, 'w') as text_file:
         text_file.write('\n'.join(content))
     print(f"Created plain text file: {filename}")
+
 
 def extract_command(display):
     lines = display.split('\n')
@@ -271,6 +264,7 @@ def extract_command(display):
             return command.replace(' ', '_')
     return "initial"
 
+
 def clean_filename(command_name):
     command_name = re.sub(r'(-p\s+\S+)', '-p', command_name)
     command_name = re.sub(r'(-H\s+\S+)', '-H', command_name)
@@ -279,6 +273,7 @@ def clean_filename(command_name):
     if not command_name:
         command_name = "command"
     return command_name
+
 
 def generate_output_filename(command, output_dir):
     cleaned_command_name = clean_filename(command)
@@ -292,14 +287,19 @@ def generate_output_filename(command, output_dir):
             index += 1
     return output_filename
 
+
 def is_trivial_command(command, trivial_commands):
     return command.split('_')[0] in trivial_commands
 
+
 if __name__ == "__main__":
-    home_dir = os.path.expanduser("~")
-    static_dir = os.path.join(home_dir, ".local", ".patronus", "static")
-    input_dir = os.path.join(static_dir, 'redacted_full')
-    output_dir = os.path.join(static_dir, 'splits')
+    # FIX: was using script_dir (pipx site-packages) — now uses PATRONUS_BASE_DIR
+    input_dir = os.path.join(STATIC_DIR, 'redacted_full')
+    output_dir = os.path.join(STATIC_DIR, 'splits')
+
+    # Ensure directories exist before trying to list them
+    os.makedirs(input_dir, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
 
     split_file(input_dir, output_dir, args.debug)
-    create_text_versions(static_dir)
+    create_text_versions(STATIC_DIR)

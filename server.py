@@ -849,6 +849,9 @@ COMMAND_TEMPLATE = '''
                     {% endif %}
                 </div>
                 <div id="demo-{{ item }}" class="dropdown-content">
+                    <!-- Dedicated empty div for the player — asciinema v3 requires
+                         a stable, pre-existing element passed to AsciinemaPlayer.create() -->
+                    <div id="player-{{ item }}"></div>
                     <div class="redact-controls">
                         <input type="text" id="redact-word-{{ item }}" placeholder="Word to redact…">
                         <button onclick="redactAndReload('{{ item }}')">Redact &amp; Reload</button>
@@ -886,16 +889,25 @@ COMMAND_TEMPLATE = '''
 
     <script src="{{ url_for('static', filename='asciinema-player.min.js') }}"></script>
     <script>
+        // Track which files have already had a player initialized
+        const initializedPlayers = {};
+
         function toggleDisplay(filename, event) {
             if (event && event.target.closest('.edit-icon, .save-btn, .exit-btn, .favorite')) return;
-            var player = document.getElementById('demo-' + filename);
-            if (player.style.display === 'block') {
-                player.style.display = 'none';
+            var dropdown = document.getElementById('demo-' + filename);
+            if (dropdown.style.display === 'block') {
+                dropdown.style.display = 'none';
             } else {
                 document.querySelectorAll('.dropdown-content').forEach(p => p.style.display = 'none');
-                player.style.display = 'block';
-                var ts = new Date().getTime();
-                AsciinemaPlayer.create('/static/splits/' + filename + '?_=' + ts, player);
+                dropdown.style.display = 'block';
+                // Only call create() once — v3 must be given a stable empty div
+                if (!initializedPlayers[filename]) {
+                    var playerDiv = document.getElementById('player-' + filename);
+                    AsciinemaPlayer.create('/static/splits/' + filename, playerDiv, {
+                        cols: 206, rows: 57, fit: 'width', theme: 'monokai'
+                    });
+                    initializedPlayers[filename] = true;
+                }
             }
         }
 
@@ -903,10 +915,14 @@ COMMAND_TEMPLATE = '''
             const params = new URLSearchParams(window.location.search);
             const openFile = params.get('open');
             if (openFile) {
-                const player = document.getElementById('demo-' + openFile);
-                if (player) {
-                    player.style.display = 'block';
-                    AsciinemaPlayer.create('/static/splits/' + openFile + '?_=' + new Date().getTime(), player);
+                var dropdown = document.getElementById('demo-' + openFile);
+                if (dropdown) {
+                    dropdown.style.display = 'block';
+                    var playerDiv = document.getElementById('player-' + openFile);
+                    AsciinemaPlayer.create('/static/splits/' + openFile, playerDiv, {
+                        cols: 206, rows: 57, fit: 'width', theme: 'monokai'
+                    });
+                    initializedPlayers[openFile] = true;
                 }
             }
         };
@@ -1047,14 +1063,17 @@ COMMAND_TEMPLATE = '''
                 body: JSON.stringify({ word, file: filename })
             }).then(r => r.json()).then(data => {
                 if (data.success) {
-                    var ts = new Date().getTime();
-                    var playerContainer = document.getElementById('demo-' + filename);
-                    playerContainer.innerHTML = '';
                     document.getElementById('redact-word-' + filename).value = '';
+                    // Clear the player div and reinitialize — v3 needs a fresh empty element
+                    var playerDiv = document.getElementById('player-' + filename);
+                    playerDiv.innerHTML = '';
+                    initializedPlayers[filename] = false;
                     setTimeout(() => {
-                        playerContainer.style.display = 'block';
-                        AsciinemaPlayer.create('/static/splits/' + filename + '?_=' + ts, playerContainer);
-                    }, 1000);
+                        AsciinemaPlayer.create('/static/splits/' + filename + '?_=' + Date.now(), playerDiv, {
+                            cols: 206, rows: 57, fit: 'width', theme: 'monokai'
+                        });
+                        initializedPlayers[filename] = true;
+                    }, 800);
                 }
             }).catch(err => console.error(err));
         }
